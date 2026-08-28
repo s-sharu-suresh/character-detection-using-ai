@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BITSCAN — Image to Binary + Character Reader</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/4.1.1/tesseract.min.js"></script>
+<style>
+  :root{
+    --void:#0A0D0A;
+    --panel:#12160F;
+    --panel-2:#161B12;
+    --line:#25301F;
+    --phosphor:#4ADE80;
+    --phosphor-dim:#1F6B3D;
+    --amber:#F5A623;
+    --ink:#E8F0E5;
+    --ink-dim:#8AA090;
+    --danger:#E5484D;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--void);
+    color:var(--ink);
+    font-family:'IBM Plex Sans',sans-serif;
+    min-height:100vh;
+    background-image:
+      radial-gradient(circle at 15% 10%, rgba(74,222,128,0.06), transparent 40%),
+      radial-gradient(circle at 85% 90%, rgba(245,166,35,0.04), transparent 40%);
+  }
+
+  /* scanline texture overlay */
+  body::before{
+    content:"";
+    position:fixed; inset:0;
+    pointer-events:none;
+    background:repeating-linear-gradient(
+      to bottom,
+      rgba(255,255,255,0.015) 0px,
+      rgba(255,255,255,0.015) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+    z-index:1000;
+    mix-blend-mode:overlay;
+  }
+
+  .wrap{max-width:1080px; margin:0 auto; padding:48px 24px 80px;}
+
+  header{
+    display:flex; justify-content:space-between; align-items:flex-end;
+    border-bottom:1px solid var(--line);
+    padding-bottom:20px;
+    margin-bottom:36px;
+    flex-wrap:wrap;
+    gap:12px;
+  }
+  .brand{display:flex; align-items:center; gap:12px;}
+  .brand-mark{
+    width:34px; height:34px;
+    border:1.5px solid var(--phosphor);
+    border-radius:4px;
+    display:grid; grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr;
+    padding:4px; gap:2px;
+  }
+  .brand-mark span{background:var(--phosphor-dim);}
+  .brand-mark span:nth-child(1),.brand-mark span:nth-child(4){background:var(--phosphor);}
+  h1{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:22px; font-weight:700;
+    letter-spacing:0.06em;
+    margin:0;
+    color:var(--ink);
+  }
+  h1 em{font-style:normal; color:var(--phosphor);}
+  .tagline{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11.5px;
+    color:var(--ink-dim);
+    letter-spacing:0.04em;
+    text-align:right;
+  }
+
+  .eyebrow{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:11px;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color:var(--phosphor);
+    margin:0 0 10px;
+    display:flex; align-items:center; gap:8px;
+  }
+  .eyebrow::before{content:"//"; color:var(--phosphor-dim);}
+
+  /* upload / viewfinder zone */
+  .scanner{
+    position:relative;
+    border:1px dashed var(--line);
+    border-radius:6px;
+    padding:28px;
+    background:var(--panel);
+    margin-bottom:14px;
+  }
+  .scanner::before,.scanner::after,
+  .corner-br,.corner-bl{
+    content:""; position:absolute; width:16px; height:16px;
+    border-color:var(--phosphor); border-style:solid;
+  }
+  .scanner::before{top:-1px; left:-1px; border-width:2px 0 0 2px;}
+  .scanner::after{top:-1px; right:-1px; border-width:2px 2px 0 0;}
+  .corner-bl{bottom:-1px; left:-1px; border-width:0 0 2px 2px;}
+  .corner-br{bottom:-1px; right:-1px; border-width:0 2px 2px 0;}
+
+  .input-row{display:flex; gap:10px; flex-wrap:wrap; margin-bottom:14px;}
+  .input-row input[type="text"]{
+    flex:1; min-width:220px;
+    background:var(--void);
+    border:1px solid var(--line);
+    color:var(--ink);
+    font-family:'IBM Plex Mono',monospace;
+    font-size:13px;
+    padding:10px 12px;
+    border-radius:4px;
+    outline:none;
+  }
+  .input-row input[type="text"]:focus{border-color:var(--phosphor);}
+  .input-row input[type="text"]::placeholder{color:var(--ink-dim);}
+
+  button{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12.5px;
+    letter-spacing:0.03em;
+    border-radius:4px;
+    border:1px solid var(--line);
+    background:var(--panel-2);
+    color:var(--ink);
+    padding:10px 16px;
+    cursor:pointer;
+    transition:border-color .15s ease, color .15s ease, transform .05s ease;
+  }
+  button:hover:not(:disabled){border-color:var(--phosphor); color:var(--phosphor);}
+  button:active:not(:disabled){transform:translateY(1px);}
+  button:disabled{opacity:0.35; cursor:not-allowed;}
+  button.primary{
+    background:var(--phosphor); color:#04140A; border-color:var(--phosphor); font-weight:600;
+  }
+  button.primary:hover:not(:disabled){background:#5fe896; color:#04140A;}
+
+  .drop{
+    border:1px solid var(--line);
+    border-radius:5px;
+    padding:28px;
+    text-align:center;
+    cursor:pointer;
+    background:repeating-linear-gradient(45deg, var(--void) 0 10px, var(--panel-2) 10px 20px);
+    color:var(--ink-dim);
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12px;
+    transition:border-color .15s ease;
+  }
+  .drop.drag-over{border-color:var(--phosphor); color:var(--phosphor);}
+  .drop strong{color:var(--ink); display:block; font-size:13px; margin-bottom:4px;}
+  #fileInput{display:none;}
+
+  .hint{font-size:11px; color:var(--ink-dim); margin-top:8px; font-family:'IBM Plex Mono',monospace;}
+
+  /* control bar */
+  .controls{
+    display:flex; align-items:center; gap:18px; flex-wrap:wrap;
+    background:var(--panel); border:1px solid var(--line); border-radius:6px;
+    padding:16px 20px; margin-bottom:28px;
+  }
+  .slider-group{display:flex; align-items:center; gap:10px; flex:1; min-width:220px;}
+  .slider-group label{font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--ink-dim); white-space:nowrap;}
+  input[type="range"]{
+    flex:1; -webkit-appearance:none; height:3px; background:var(--line); border-radius:2px; outline:none;
+  }
+  input[type="range"]::-webkit-slider-thumb{
+    -webkit-appearance:none; width:14px; height:14px; border-radius:50%;
+    background:var(--phosphor); cursor:pointer; border:2px solid var(--void);
+  }
+  #thresholdVal{font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--phosphor); width:34px;}
+  #strokeVal{font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--phosphor); width:20px;}
+
+  select{
+    font-family:'IBM Plex Mono',monospace;
+    font-size:12px;
+    background:var(--void);
+    color:var(--ink);
+    border:1px solid var(--line);
+    border-radius:4px;
+    padding:8px 10px;
+    outline:none;
+    cursor:pointer;
+  }
+  select:focus{border-color:var(--phosphor);}
+  select:disabled{opacity:0.35; cursor:not-allowed;}
+
+  /* result panels */
+  .panels{
+    display:grid; grid-template-columns:1fr 1fr; gap:20px; margin-bottom:28px;
+  }
+  @media (max-width:760px){ .panels{grid-template-columns:1fr;} }
+
+  .panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:6px; overflow:hidden;
+  }
+  .panel-head{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:10px 14px; border-bottom:1px solid var(--line);
+    font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:0.08em;
+    color:var(--ink-dim); text-transform:uppercase;
+  }
+  .dot{width:6px; height:6px; border-radius:50%; background:var(--phosphor-dim);}
+  .dot.live{background:var(--phosphor); box-shadow:0 0 6px var(--phosphor);}
+  .panel-body{padding:14px; min-height:220px; display:flex; align-items:center; justify-content:center; position:relative;}
+  canvas{max-width:100%; display:block; image-rendering:pixelated; border-radius:3px;}
+
+  .placeholder{color:var(--ink-dim); font-family:'IBM Plex Mono',monospace; font-size:12px; text-align:center;}
+
+  .sweep{
+    position:absolute; left:0; right:0; top:0; height:2px;
+    background:linear-gradient(90deg, transparent, var(--phosphor), transparent);
+    box-shadow:0 0 12px var(--phosphor);
+    animation:sweepMove 1.4s linear infinite;
+    display:none;
+  }
+  .sweep.active{display:block;}
+  @keyframes sweepMove{
+    0%{top:0;}
+    100%{top:100%;}
+  }
+
+  /* terminal output */
+  .terminal{
+    background:var(--panel); border:1px solid var(--line); border-radius:6px; overflow:hidden;
+  }
+  .terminal-head{
+    display:flex; justify-content:space-between; align-items:center;
+    padding:10px 14px; border-bottom:1px solid var(--line);
+  }
+  .terminal-head .title{font-family:'IBM Plex Mono',monospace; font-size:11px; letter-spacing:0.08em; color:var(--ink-dim); text-transform:uppercase;}
+  .stats{display:flex; gap:16px; font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--ink-dim);}
+  .stats b{color:var(--phosphor); font-weight:600;}
+  .terminal-body{
+    padding:18px; font-family:'IBM Plex Mono',monospace; font-size:13.5px; line-height:1.7;
+    white-space:pre-wrap; word-break:break-word;
+    min-height:120px; max-height:280px; overflow-y:auto;
+    color:var(--ink);
+  }
+  .terminal-body .digit{color:var(--amber); font-weight:600;}
+  .terminal-body .cursor{display:inline-block; width:8px; height:15px; background:var(--phosphor); animation:blink 1s step-end infinite; vertical-align:text-bottom; margin-left:2px;}
+  @keyframes blink{50%{opacity:0;}}
+  .empty-state{color:var(--ink-dim);}
+
+  .progress-wrap{padding:0 18px 14px; display:none;}
+  .progress-wrap.active{display:block;}
+  .progress-label{font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--phosphor-dim); margin-bottom:6px;}
+  .progress-track{height:4px; background:var(--line); border-radius:2px; overflow:hidden;}
+  .progress-fill{height:100%; width:0%; background:var(--phosphor); transition:width .2s ease;}
+
+  footer{
+    margin-top:40px; padding-top:20px; border-top:1px solid var(--line);
+    font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--ink-dim);
+    display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;
+  }
+
+  .error-msg{
+    font-family:'IBM Plex Mono',monospace; font-size:12px; color:var(--danger);
+    margin-top:10px; display:none;
+  }
+  .error-msg.show{display:block;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <div class="brand-mark"><span></span><span></span><span></span><span></span></div>
+      <h1>BIT<em>SCAN</em></h1>
+    </div>
+    <div class="tagline">image → binary raster → character read-out</div>
+  </header>
+
+  <p class="eyebrow">01 / Load a source image</p>
+  <div class="scanner">
+    <div class="corner-bl"></div><div class="corner-br"></div>
+    <div class="input-row">
+      <input type="text" id="urlInput" placeholder="Paste an image URL (https://...)" />
+      <button id="loadUrlBtn">Load URL</button>
+    </div>
+    <div class="drop" id="dropZone">
+      <strong>Drop an image here, or click to browse</strong>
+      choose a photo of text, a screenshot, or any picture with a lock icon <span style="color:var(--phosphor)">of characters/numbers</span> in it
+      <input type="file" id="fileInput" accept="image/*" />
+    </div>
+    <div class="hint">Note: some external URLs block cross-origin reading — if a pasted URL fails, download the image and upload it instead.</div>
+    <div class="error-msg" id="errorMsg"></div>
+  </div>
+
+  <div class="controls">
+    <div class="slider-group">
+      <label>THRESHOLD</label>
+      <input type="range" id="thresholdSlider" min="0" max="255" value="128" disabled />
+      <span id="thresholdVal">128</span>
+    </div>
+    <button id="autoThresholdBtn" disabled>Auto</button>
+  </div>
+
+  <div class="controls">
+    <div class="slider-group">
+      <label>STROKE</label>
+      <input type="range" id="strokeSlider" min="-3" max="3" value="0" disabled />
+      <span id="strokeVal">0</span>
+    </div>
+    <div class="slider-group" style="flex:0 0 auto; min-width:0;">
+      <label>MODE</label>
+      <select id="psmSelect" disabled>
+        <option value="3">Auto (block of text)</option>
+        <option value="6">Uniform block</option>
+        <option value="7">Single line</option>
+        <option value="8">Single word</option>
+        <option value="11">Sparse text</option>
+      </select>
+    </div>
+    <button id="extractBtn" class="primary" disabled>Extract characters</button>
+  </div>
+  <div class="hint" style="margin-top:-18px; margin-bottom:24px;">STROKE thickens (+) or thins (−) binary strokes before OCR · MODE tells Tesseract how to segment the page — try "Single line" or "Sparse text" for doodle-style or loosely spaced text.</div>
+
+  <p class="eyebrow">02 / Binary raster</p>
+  <div class="panels">
+    <div class="panel">
+      <div class="panel-head"><span>Source</span><span class="dot" id="sourceDot"></span></div>
+      <div class="panel-body" id="sourceBody">
+        <span class="placeholder">— no image loaded —</span>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><span>Binary (0 / 1 per pixel)</span><span class="dot" id="binaryDot"></span></div>
+      <div class="panel-body" id="binaryBody">
+        <span class="placeholder">— awaiting threshold pass —</span>
+        <div class="sweep" id="sweep"></div>
+      </div>
+    </div>
+  </div>
+
+  <p class="eyebrow">03 / Characters found</p>
+  <div class="terminal">
+    <div class="terminal-head">
+      <span class="title">OCR read-out</span>
+      <div class="stats">
+        <span>CHARS <b id="statChars">0</b></span>
+        <span>DIGITS <b id="statDigits">0</b></span>
+        <span>WORDS <b id="statWords">0</b></span>
+      </div>
+    </div>
+    <div class="progress-wrap" id="progressWrap">
+      <div class="progress-label" id="progressLabel">initializing…</div>
+      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    </div>
+    <div class="terminal-body" id="terminalBody"><span class="empty-state">Load an image, then run "Extract characters" to read its text.<span class="cursor"></span></span></div>
+  </div>
+
+  <footer>
+    <span>BITSCAN · client-side image binarization + Tesseract.js OCR</span>
+    <span id="dimsReadout"></span>
+  </footer>
+
+</div>
+
+<script>
+(function(){
+  const urlInput = document.getElementById('urlInput');
+  const loadUrlBtn = document.getElementById('loadUrlBtn');
+  const dropZone = document.getElementById('dropZone');
+  const fileInput = document.getElementById('fileInput');
+  const errorMsg = document.getElementById('errorMsg');
+  const sourceBody = document.getElementById('sourceBody');
+  const binaryBody = document.getElementById('binaryBody');
+  const sourceDot = document.getElementById('sourceDot');
+  const binaryDot = document.getElementById('binaryDot');
+  const sweep = document.getElementById('sweep');
+  const thresholdSlider = document.getElementById('thresholdSlider');
+  const thresholdVal = document.getElementById('thresholdVal');
+  const autoThresholdBtn = document.getElementById('autoThresholdBtn');
+  const strokeSlider = document.getElementById('strokeSlider');
+  const strokeVal = document.getElementById('strokeVal');
+  const psmSelect = document.getElementById('psmSelect');
+  const extractBtn = document.getElementById('extractBtn');
+  const terminalBody = document.getElementById('terminalBody');
+  const statChars = document.getElementById('statChars');
+  const statDigits = document.getElementById('statDigits');
+  const statWords = document.getElementById('statWords');
+  const progressWrap = document.getElementById('progressWrap');
+  const progressLabel = document.getElementById('progressLabel');
+  const progressFill = document.getElementById('progressFill');
+  const dimsReadout = document.getElementById('dimsReadout');
+
+  const MAX_DIM = 900;
+  let sourceCanvas = null;   // holds the loaded (possibly downscaled) source image
+  let binaryCanvas = null;   // holds the current binarized version
+
+  function showError(msg){
+    errorMsg.textContent = msg;
+    errorMsg.classList.add('show');
+  }
+  function clearError(){
+    errorMsg.classList.remove('show');
+    errorMsg.textContent = '';
+  }
+
+  function loadImageElement(img){
+    clearError();
+    let w = img.naturalWidth, h = img.naturalHeight;
+    if (w === 0 || h === 0){ showError('Could not read image dimensions.'); return; }
+    const scale = Math.min(1, MAX_DIM / Math.max(w, h));
+    w = Math.round(w * scale); h = Math.round(h * scale);
+
+    sourceCanvas = document.createElement('canvas');
+    sourceCanvas.width = w; sourceCanvas.height = h;
+    const ctx = sourceCanvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, w, h);
+
+    sourceBody.innerHTML = '';
+    sourceBody.appendChild(sourceCanvas);
+    sourceDot.classList.add('live');
+    dimsReadout.textContent = w + ' × ' + h + ' px';
+
+    thresholdSlider.disabled = false;
+    autoThresholdBtn.disabled = false;
+    strokeSlider.disabled = false;
+    psmSelect.disabled = false;
+    extractBtn.disabled = false;
+    strokeSlider.value = 0;
+    strokeVal.textContent = '0';
+
+    computeAutoThreshold();
+    renderBinary(parseInt(thresholdSlider.value, 10));
+
+    terminalBody.innerHTML = '<span class="empty-state">Ready. Click "Extract characters" to run OCR.<span class="cursor"></span></span>';
+    statChars.textContent = '0'; statDigits.textContent = '0'; statWords.textContent = '0';
+  }
+
+  function loadFromFile(file){
+    if (!file || !file.type.startsWith('image/')){ showError('Please choose an image file.'); return; }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => loadImageElement(img);
+      img.onerror = () => showError('Could not decode that image file.');
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function loadFromUrl(url){
+    if (!url) return;
+    clearError();
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      try { loadImageElement(img); }
+      catch(err){ showError('Image loaded but is protected (CORS) — download it and upload the file instead.'); }
+    };
+    img.onerror = () => showError('Could not load that URL as an image (it may block cross-origin access). Try downloading and uploading it instead.');
+    img.src = url;
+  }
+
+  loadUrlBtn.addEventListener('click', () => loadFromUrl(urlInput.value.trim()));
+  urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') loadFromUrl(urlInput.value.trim()); });
+
+  dropZone.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', (e) => { if (e.target.files[0]) loadFromFile(e.target.files[0]); });
+  ['dragenter','dragover'].forEach(ev => dropZone.addEventListener(ev, (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); }));
+  ['dragleave','drop'].forEach(ev => dropZone.addEventListener(ev, (e) => { e.preventDefault(); dropZone.classList.remove('drag-over'); }));
+  dropZone.addEventListener('drop', (e) => { if (e.dataTransfer.files[0]) loadFromFile(e.dataTransfer.files[0]); });
+
+  function grayscaleData(ctx, w, h){
+    const imgData = ctx.getImageData(0, 0, w, h);
+    const d = imgData.data;
+    const gray = new Uint8ClampedArray(w * h);
+    for (let i = 0, p = 0; i < d.length; i += 4, p++){
+      gray[p] = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+    }
+    return gray;
+  }
+
+  function computeAutoThreshold(){
+    if (!sourceCanvas) return;
+    const w = sourceCanvas.width, h = sourceCanvas.height;
+    const ctx = sourceCanvas.getContext('2d');
+    const gray = grayscaleData(ctx, w, h);
+    // Otsu's method
+    const hist = new Array(256).fill(0);
+    for (let i = 0; i < gray.length; i++) hist[gray[i]]++;
+    const total = gray.length;
+    let sum = 0;
+    for (let t = 0; t < 256; t++) sum += t * hist[t];
+    let sumB = 0, wB = 0, wF = 0, maxVar = 0, threshold = 128;
+    for (let t = 0; t < 256; t++){
+      wB += hist[t];
+      if (wB === 0) continue;
+      wF = total - wB;
+      if (wF === 0) break;
+      sumB += t * hist[t];
+      const mB = sumB / wB;
+      const mF = (sum - sumB) / wF;
+      const varBetween = wB * wF * (mB - mF) * (mB - mF);
+      if (varBetween > maxVar){ maxVar = varBetween; threshold = t; }
+    }
+    thresholdSlider.value = threshold;
+    thresholdVal.textContent = threshold;
+  }
+
+  // 0 = black (ink/foreground), 1 = white (background)
+  // positive `iterations` = dilate (thicken strokes), negative = erode (thin strokes)
+  function applyMorphology(bits, w, h, iterations){
+    if (iterations === 0) return bits;
+    const dilate = iterations > 0;
+    const steps = Math.abs(iterations);
+    let current = bits;
+    for (let s = 0; s < steps; s++){
+      const next = new Uint8Array(current.length);
+      for (let y = 0; y < h; y++){
+        for (let x = 0; x < w; x++){
+          const idx = y * w + x;
+          let val = current[idx];
+          for (let dy = -1; dy <= 1 && (dilate ? val !== 0 : val !== 1); dy++){
+            for (let dx = -1; dx <= 1; dx++){
+              if (dx === 0 && dy === 0) continue;
+              const ny = y + dy, nx = x + dx;
+              if (ny < 0 || ny >= h || nx < 0 || nx >= w) continue;
+              const nv = current[ny * w + nx];
+              if (dilate && nv === 0){ val = 0; break; }
+              if (!dilate && nv === 1){ val = 1; break; }
+            }
+          }
+          next[idx] = val;
+        }
+      }
+      current = next;
+    }
+    return current;
+  }
+
+  function renderBinary(threshold){
+    if (!sourceCanvas) return;
+    const w = sourceCanvas.width, h = sourceCanvas.height;
+    const srcCtx = sourceCanvas.getContext('2d');
+    const gray = grayscaleData(srcCtx, w, h);
+
+    let bits = new Uint8Array(gray.length);
+    for (let p = 0; p < gray.length; p++){
+      bits[p] = gray[p] > threshold ? 1 : 0;
+    }
+
+    const strokeAdjust = strokeSlider ? parseInt(strokeSlider.value, 10) : 0;
+    bits = applyMorphology(bits, w, h, strokeAdjust);
+
+    binaryCanvas = document.createElement('canvas');
+    binaryCanvas.width = w; binaryCanvas.height = h;
+    const bctx = binaryCanvas.getContext('2d');
+    const out = bctx.createImageData(w, h);
+    for (let p = 0; p < bits.length; p++){
+      const v = bits[p] === 1 ? 255 : 0;
+      const o = p * 4;
+      out.data[o] = v; out.data[o+1] = v; out.data[o+2] = v; out.data[o+3] = 255;
+    }
+    bctx.putImageData(out, 0, 0);
+
+    binaryBody.innerHTML = '';
+    binaryBody.appendChild(binaryCanvas);
+    binaryBody.appendChild(sweep);
+    binaryDot.classList.add('live');
+  }
+
+  thresholdSlider.addEventListener('input', (e) => {
+    const t = parseInt(e.target.value, 10);
+    thresholdVal.textContent = t;
+    renderBinary(t);
+  });
+  autoThresholdBtn.addEventListener('click', () => {
+    computeAutoThreshold();
+    renderBinary(parseInt(thresholdSlider.value, 10));
+  });
+  strokeSlider.addEventListener('input', (e) => {
+    const s = parseInt(e.target.value, 10);
+    strokeVal.textContent = (s > 0 ? '+' : '') + s;
+    renderBinary(parseInt(thresholdSlider.value, 10));
+  });
+
+  function escapeHtml(s){
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function renderOcrResult(text){
+    const trimmed = text.trim();
+    if (!trimmed){
+      terminalBody.innerHTML = '<span class="empty-state">No characters were confidently recognized. Try adjusting the threshold or using a clearer image.<span class="cursor"></span></span>';
+      statChars.textContent = '0'; statDigits.textContent = '0'; statWords.textContent = '0';
+      return;
+    }
+    const escaped = escapeHtml(trimmed);
+    const highlighted = escaped.replace(/[0-9]/g, (d) => '<span class="digit">' + d + '</span>');
+    terminalBody.innerHTML = highlighted + '<span class="cursor"></span>';
+
+    const digitCount = (trimmed.match(/[0-9]/g) || []).length;
+    const wordCount = (trimmed.match(/\S+/g) || []).length;
+    statChars.textContent = trimmed.replace(/\s/g,'').length;
+    statDigits.textContent = digitCount;
+    statWords.textContent = wordCount;
+  }
+
+  extractBtn.addEventListener('click', async () => {
+    if (!binaryCanvas){ showError('Load an image first.'); return; }
+    clearError();
+    extractBtn.disabled = true;
+    sweep.classList.add('active');
+    progressWrap.classList.add('active');
+    progressLabel.textContent = 'initializing…';
+    progressFill.style.width = '5%';
+    terminalBody.innerHTML = '<span class="empty-state">Reading pixels<span class="cursor"></span></span>';
+
+    try{
+      let dataUrl;
+      try{
+        dataUrl = binaryCanvas.toDataURL('image/png');
+      } catch(taintErr){
+        throw new Error('Canvas is "tainted" by a cross-origin image — this image URL cannot be processed. Please download the image and upload it as a file instead.');
+      }
+
+      const psmMode = psmSelect.value;
+
+      const result = await Tesseract.recognize(dataUrl, 'eng', {
+        tessedit_pageseg_mode: psmMode,
+        logger: (m) => {
+          if (m.status && typeof m.progress === 'number'){
+            progressLabel.textContent = m.status + '…';
+            progressFill.style.width = Math.round(m.progress * 100) + '%';
+          }
+        }
+      });
+
+      renderOcrResult(result.data.text || '');
+    } catch(err){
+      let detail = 'unknown error';
+      if (err){
+        if (err.message) detail = err.message;
+        else if (err.name) detail = err.name;
+        else if (typeof err === 'string') detail = err;
+        else { try { detail = JSON.stringify(err); } catch(_){} }
+      }
+      showError('OCR failed: ' + detail);
+      terminalBody.innerHTML = '<span class="empty-state">Could not read characters from this image.<span class="cursor"></span></span>';
+      console.error('BITSCAN OCR error:', err);
+    } finally {
+      sweep.classList.remove('active');
+      progressWrap.classList.remove('active');
+      extractBtn.disabled = false;
+    }
+  });
+})();
+</script>
+</body>
+</html>
